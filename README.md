@@ -4,5 +4,7 @@ We investigate the similarities and differences between the inmates who have bee
 
 
 FinalData.csv - Data scraped from https://www.tdcj.state.tx.us/death_row/dr_executed_offenders.html and cleaned in R.
+
 FinalProjectAnalysis.Rmd - Code used to create graphs and models for project.
+
 K-Nices_ProjectFinalWriteUp.pdf - Final write-up summarizing the project outcomes.
