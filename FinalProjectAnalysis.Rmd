@@ -1,0 +1,405 @@
+---
+title: "Latent Dirichlet Allocation"
+author: "Megan Robertson"
+date: "Wednesday, November 04, 2015"
+output: pdf_document
+---
+
+```{r}
+#loading packages
+require(tm) #text mining
+require(topicmodels) #LDA
+require(ldatuning) #determining number of packages
+require(klaR) #package for kmodes
+require(stringr) #string manipulation
+require(dplyr) #data manipulation
+require(lubridate) #date manipulation
+require(ggmap)
+require(maps)
+require(ggplot2)
+
+
+#set working directory, change to your own location
+setwd("C:\\Users\\Megan Robertson\\Documents\\STA521\\project")
+
+# read data and update column names
+data = read.csv("FinalData.csv", header = TRUE, 
+  stringsAsFactors = FALSE)
+
+file = "DeathPenalty_data/executions/execdates.Rdata"
+exec_data = load(file)
+
+colnames(data) = c("X", "Name", "TDCJ.Number", "DOB", 
+	"Date.Received", "Age.Received", "Education", 
+	"Offense.Date", "Offense.Age", "County", "Race", 
+	"Gender", "Hair", "Height", "Weight", "Eye",
+	"Native.County", "Native.State", "Last.Words", 
+	"Prior.Occupation", "Record", "Summary", "Codefend", 
+	"Victim", "Times.Prison")
+
+# edit prison record column to 1's and 0's
+data$Record = data$Record %>%
+  			     str_trim() %>% 
+				     tolower() %>%
+					 str_replace(c("none"), 0) %>%
+					 str_replace("n/a", 0) %>%
+					 str_replace("unknown", 0)
+
+
+data$Record[str_detect(data$Record, "[a-z]") & !is.na(data$Record)] = 1
+data$Record[str_detect(data$Record, "0.5") & !is.na(data$Record)] = 1
+
+data$Record = as.factor(data$Record)
+
+# fix dates
+for (i in 1:nrow(data)){
+  if (is.na(data$Date.Received[i]) == FALSE){
+		if (str_detect(data$Date.Received[i], "/") == TRUE){
+			date = mdy(data$Date.Received[i]) %>%
+			       str_replace(" UTC", "")
+		data$Date.Received[i] = date
+		}
+	}
+}
+
+data$Date.Received = ymd(data$Date.Received)
+
+# edit co-defendant column
+data$Codefend = data$Codefend %>%
+				     str_trim() %>% 
+				     tolower() %>%
+					 str_replace("none  identified", 0) %>%
+					 str_replace(c("none"), 0) %>%
+					 str_replace("n/a", 0) %>%
+					 str_replace("unknown", 0)
+
+data$Codefend[str_detect(data$Codefend, "[a-z]") & !is.na(data$Codefend)] = 1
+data$Codefend = as.factor(data$Codefend)
+		
+
+# add indicators for race of victims 
+data$white.victim = data$Victim %>%
+                    str_detect("White")
+
+data$black.victim = data$Victim %>%
+		            str_detect("Black")
+
+data$hispanic.victim = data$Victim %>%
+                       str_detect("Hispanic")
+
+data$asian.victim = data$Victim %>%
+                       str_detect("Asian")
+
+#reducing levels of county
+data$county.cat = "Other"
+for (i in (1:nrow(data))){
+  if (is.na(data[i,]$County)){data[i,]$County = "Other"}
+  if (data[i,]$County == "Dallas"){data[i,]$county.cat = "Dallas"}
+  if (data[i,]$County == "Bexar"){data[i,]$county.cat = "Bexar"}
+  if (data[i,]$County == "Tarrant"){data[i,]$county.cat = "Tarrant"}
+  if (data[i,]$County == "Harris"){data[i,]$county.cat = "Harris"}
+}
+
+#reduces the levels of states
+data$state.cat = "Texas"
+for (i in (1:nrow(data))){
+  if (is.na(data[i,]$Native.State)){data[i,]$Native.State = "None"}
+  if (data[i,]$Native.State == "None"){data[i,]$state.cat = NA}
+}
+for (i in (1:nrow(data))){
+  if(data[i,]$Native.State %in% 
+    c("California", "New Mexico", "Oregon", "Colorado", "Idaho", "Utah", "Arizona", "Washington")){data[i,]$state.cat = "West"}  
+  if (data[i,]$Native.State %in%
+    c("Illinois", "Indiana", "Kansas", "Minnesota", "Missouri", "Ohio", "Oklahoma", "Arkansas", "Michigan", "Nebraska")){data[i,]$state.cat = "Middle"}
+  if (data[i,]$Native.State %in%
+    c("Alabama", "Florida", "Georgia", "Kentucky", "Lousiana", "Mississippi", "Tennessee", "West Virginia" , "Virginia", "New York", "New Jersey", "South Carolina", "North Carolina", "Pennsylvania", "Vermont", "Rhode Island")){data[i,]$state.cat="East"}
+  if (data[i,]$Native.State %in%
+    c("American Samoa", "Bangladesh", "Cuba", "Germany", "Honduras", "Mexico", "Canada", "Dominican Republic", "England", "France", "Phillipines", "South Vietnam", "Netherlands")){data[i,]$state.cat = "Foreign"}
+}
+
+#adding height
+inches = str_extract(data$Height, "[^-]+$")
+feet_inches = 12 * as.numeric(str_extract(data$Height, "[0-9]"))
+
+data$Height.inches = as.numeric(feet_inches) + as.numeric(inches)
+```
+
+#Exploratory Data Analysis
+```{r}
+# plot colored map for counties
+colors = c("#F1EEF6", "#D4B9DA", "#C994C7", "#DF65B0", "#DD1C77", 
+    "#980043")
+
+# get counties ready for to be merged with map counties
+counties = str_trim(texecution$County) %>% 
+           tolower() %>%
+           table()
+county_numbers = as.numeric(counties)
+county_names = names(counties) 
+county_names = paste0("texas,", county_names)
+
+# join colors for counties with all of the counies
+county = data.frame(name = county_names, numbers = county_numbers)
+map_county = data.frame(name = map("county", "texas", plot = FALSE)$names)
+joined_counties = left_join(map_county, county, by = "name")
+
+
+# cut colors at certain intervals 
+joined_counties$colorBuckets = as.numeric(cut(joined_counties$numbers, 
+	c(0, 2, 5, 10, 20, 35, 200)))
+
+joined_counties$colorBuckets[is.na(joined_counties$colorBuckets)] = 1
+
+
+# plot map of counties with black borders
+pdf("countymap.pdf")
+map("county", "texas", col = colors[joined_counties$colorBuckets], 
+	fill = TRUE, resolution = 1, 
+    lty = 0)
+map("county", "texas", col = "black", add = TRUE, 
+	fill = FALSE, lty = 1, lwd = 0.2)
+title("Crimes Committed per County")
+leg.txt = c("<2", "3-5", "6-10", "11-20", "11-35", ">35")
+legend("topleft", leg.txt, fill = colors)
+dev.off()
+
+# table for gender
+table(data$Gender)
+
+
+# table for education level
+educ = data$Education[is.na(data$Codefend) == FALSE]
+table(educ)
+pdf("education.pdf")
+
+#plot education levels
+ggplot(data, aes(x = Education)) + 
+	geom_histogram(binwidth = 2, col = "black",
+	fill = "blue") + 
+	labs(x = "Education Level", y = "Count") +
+	ggtitle("Education Level Achieved")
+
+dev.off()
+
+
+killed = data.frame(table(year(texecution[,"Date"])))
+killed$Var1 = as.numeric(as.character(killed$Var1))
+killed$Freq = as.numeric(killed$Freq)
+
+pdf("peryear.pdf")
+ggplot(killed, aes(x = Var1, y = Freq)) + 
+geom_line() + ggtitle("Number Executed per Year") +
+labs(x = "Year")
+
+dev.off()
+
+# race of inmates 
+texecution$Race = str_trim(texecution$Race)
+
+pdf("race.pdf")
+ ggplot(data=texecution, aes(x=Race)) +
+    geom_bar() + ggtitle("Races of Offenders")
+dev.off()
+
+codefendants = data$Codefend[is.na(data$Codefend) == FALSE]
+
+# proportion without codefendants 
+sum(codefendants == "0") / length(codefendants)
+```
+
+
+###LDA Analysis for Last Statements
+```{r}
+#creating a corpus of the last statments
+corp.last.words <- Corpus(VectorSource(data$Last.Words))
+
+#creating the dtm
+dtm.last.words <- DocumentTermMatrix(corp.last.words, 
+  control = list(tolower=TRUE, removePunctuation = TRUE, removeNumbers=TRUE, 
+  stemming=TRUE, weighting = function(x) weightTf(x), stopwords = TRUE))
+
+#removing documents without words (code from a Stack Overflow post)
+#sum of the words in each document
+rowTotals <- apply(dtm.last.words, 1, sum)
+#not keeping documents with zero words
+dtm.last.words.new   <- dtm.last.words[rowTotals> 0, ]
+
+#determining number of clusters
+result.last.words <- FindTopicsNumber(
+  dtm.last.words.new,
+  topics = seq(from = 2, to = 20, by = 1),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  mc.cores = 1,
+  verbose = TRUE
+)
+
+#plotting the metrics
+FindTopicsNumber_plot(result.last.words)
+
+#testing different number of topics
+model.2 = LDA(dtm.last.words.new, k = 2, method="Gibbs")
+terms(model.2, 15)
+
+model.4 = LDA(dtm.last.words.new, k = 4, method = "Gibbs")
+terms(model.4, 15)
+
+model.5 = LDA(dtm.last.words.new, k = 5, method = "Gibbs")
+terms(model.5, 15)
+
+model.6 = LDA(dtm.last.words.new, k =6, method = "Gibbs")
+terms(model.6, 15)
+
+model.10 = LDA(dtm.last.words.new, k = 10, method = "Gibbs")
+terms(model.10, 15)
+
+#getting the topic assignments matched with the data
+assignments.last.words = data.frame(topics(model.5))
+assignments.last.words$X = rownames(assignments.last.words)
+colnames(assignments.last.words) = c("LS.Topic", "X")
+data.ls.topic = merge(data, assignments.last.words, by = "X", all.x = TRUE)
+data.ls.topic[which(is.na(data.ls.topic$LS.Topic)),]$LS.Topic = 6
+```
+
+###LDA for Crimes
+```{r}
+#getting corpus and dtm, same method as above
+corp.crimes <- Corpus(VectorSource(data$Summary))
+dtm.crimes <- DocumentTermMatrix(corp.crimes, 
+  control = list(tolower=TRUE, removePunctuation = TRUE, removeNumbers=TRUE, 
+  stemming=TRUE, weighting = function(x) weightTf(x), stopwords = TRUE))
+rowTotals <- apply(dtm.crimes, 1, sum) #sum of the words in each document
+dtm.crimes.new   <- dtm.crimes[rowTotals> 0, ]
+
+#determining the number of clusters
+result.crimes <- FindTopicsNumber(
+  dtm.crimes.new,
+  topics = seq(from = 2, to = 15, by = 1),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  mc.cores = 1,
+  verbose = TRUE
+)
+
+#plotting the metrics
+FindTopicsNumber_plot(result.crimes)
+
+#testing different numbers of topics
+model.crimes.2 = LDA(dtm.crimes.new, k = 2, method = "Gibbs")
+terms(model.crimes.2, 15)
+
+model.crimes.3 = LDA(dtm.crimes.new, k =3 , method = "Gibbs")
+terms(model.crimes.3, 15)
+
+model.crimes.4 = LDA(dtm.crimes.new, k = 4, method = "Gibbs")
+terms(model.crimes.4, 15)
+
+model.crimes.5 = LDA(dtm.crimes.new, k = 5, method="Gibbs")
+terms(model.crimes.5, 15)
+
+model.crimes.6 = LDA(dtm.crimes.new, k = 6, method = "Gibbs")
+terms(model.crimes.6, 15)
+
+model.crimes.7 = LDA(dtm.crimes.new, k = 7, method = "Gibbs")
+terms(model.crimes.7, 15)
+
+model.crimes.12 = LDA(dtm.crimes.new, k = 12, method="Gibbs")
+terms(model.crimes.12, 15)
+
+model.crimes.13 = LDA(dtm.crimes.new, k = 13, method = "Gibbs")
+terms(model.crimes.13, 15)
+
+#matching topics of crime with prisoner
+assignments.crimes = data.frame(topics(model.crimes.3))
+assignments.crimes$X = rownames(assignments.crimes)
+colnames(assignments.crimes) = c("Crimes.Topic", "X")
+data.topics = merge(data.ls.topic, assignments.crimes, by = "X", all.x = TRUE)
+colnames(data.topics)[26] = "labor.cat"
+
+data.topics[which(data.topics$Eye=="Mar"),]$Eye = "Maroon"
+```
+
+```{r}
+write.csv(data.topics, file = "C:/Users/Megan Robertson/Documents/STA521/project/DataTopics.csv")
+```
+
+
+###K-Modes Clustering
+```{r}
+#create a dataframe with only categorical variables, complete observations
+categorical.data = data.topics[, c("Education", "Race", "Gender", "Hair", "Eye", "Record", "Codefend", "labor.cat", "white.victim", "black.victim", "hispanic.victim", "asian.victim", "county.cat", "state.cat", "LS.Topic", "Crimes.Topic")]
+complete.cat = categorical.data[complete.cases(categorical.data),]
+
+set.seed(45)
+#cluster.2 = kmodes(complete.cat, mode=2)
+#cluster.3 = kmodes(complete.cat, mode=3)
+cluster.4 = kmodes(complete.cat[, 1:14], mode=4)
+#cluster.5 = kmodes(complete.cat, mode=5)
+#cluster.6 = kmodes(complete.cat, mode=6)
+#cluster.7 = kmodes(complete.cat, mode=7)
+cluster.8 = kmodes(complete.cat[,1:14], mode=8)
+
+complete.cat$ID.cat = 1
+for (k in (1:nrow(complete.cat))){
+  complete.cat[k,]$ID.cat = k
+}
+
+#four clusters
+assignments.four.clusters = data.frame(cluster.4$cluster)
+assignments.four.clusters$ID.cat = rownames(assignments.four.clusters)
+colnames(assignments.four.clusters) = c("FourClust", "ID.cat")
+complete.cat.4 = merge(complete.cat, assignments.four.clusters, by = "ID.cat", all.x = TRUE)
+
+#eight clusters
+assignments.eight.clusters = data.frame(cluster.8$cluster)
+assignments.eight.clusters$ID.cat = rownames(assignments.eight.clusters)
+colnames(assignments.eight.clusters) = c("EightClust", "ID.cat")
+complete.cat.8 = merge(complete.cat.4, assignments.eight.clusters, by = "ID.cat", all.x = TRUE)
+
+
+#looking at cluster assignments of four clusters
+table(complete.cat.8$FourClust, complete.cat$Education)
+table(complete.cat.8$FourClust, complete.cat.8$Race)
+table(complete.cat.8$FourClust, complete.cat.8$Gender)
+table(complete.cat.8$FourClust, complete.cat.8$Hair)
+table(complete.cat.8$FourClust, complete.cat.8$Eye)
+table(complete.cat.8$FourClust, complete.cat.8$Record)
+table(complete.cat.8$FourClust, complete.cat.8$Codefend)
+table(complete.cat.8$FourClust, complete.cat.8$labor.cat)
+table(complete.cat.8$FourClust, complete.cat.8$white.victim)
+table(complete.cat.8$FourClust, complete.cat.8$black.victim)
+table(complete.cat.8$FourClust, complete.cat.8$hispanic.victim)
+table(complete.cat.8$FourClust, complete.cat.8$asian.victim)
+table(complete.cat.8$FourClust, complete.cat.8$county.cat)
+table(complete.cat.8$FourClust, complete.cat.8$state.cat)
+table(complete.cat.8$FourClust, complete.cat.8$LS.Topic)
+table(complete.cat.8$FourClust, complete.cat.8$Crimes.Topic)
+```
+
+#Regression
+```{r}
+#adding religion column to predict if speaking about religion
+data_topics$religion = 0
+data_topics$religion[data_topics$LS.Topic == 1] = 1
+
+
+model_fit = glm(as.factor(religion) ~ 
+	factor(Crimes.Topic) + 
+	#factor(Race) + 
+	#Offense.Age + 
+	#Education +
+	#factor(Codefend) 
+	factor(Record), 
+	data = data_topics, family = binomial)
+
+summary(model_fit)
+
+dev_diff = model_fit$null.deviance - model_fit$deviance
+
+df_diff = model_fit$df.null - model_fit$df.residual
+
+pchisq(dev_diff, df_diff, lower.tail = FALSE)
+```
+
